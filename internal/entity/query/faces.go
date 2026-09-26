@@ -561,6 +561,12 @@ func ResolveFaceCollisions() (conflicts, resolved int, err error) {
 					continue
 				}
 
+				// A collision whose radius cannot narrow f1 is recorded at most once and not reported again.
+				if f1.CollisionNoted(dist) {
+					done[matchId] = true
+					continue
+				}
+
 				conflicts++
 
 				r := f1.AcceptDist()

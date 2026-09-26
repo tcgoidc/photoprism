@@ -314,6 +314,29 @@ func (m *Face) ResolveCollision(embeddings face.Embeddings, model face.ModelName
 		UpdateFaces.Store(true)
 		return true, m.Updates(Values{"collisions": m.Collisions, "collision_radius": m.CollisionRadius,
 			"face_kind": m.FaceKind, "updated_at": m.UpdatedAt, "matched_at": m.MatchedAt})
+	} else if radius := dist - face.Epsilon; radius <= face.CollisionDist {
+		// A radius at or below CollisionDist cannot narrow the cluster, so it is recorded at most
+		// once, without reopening the cluster or revising what it holds. The stored row decides, so
+		// a copy loaded before a concurrent narrowing cannot widen the cluster.
+		if m.CollisionNoted(dist) {
+			return false, nil
+		}
+
+		res := UnscopedDb().Model(&Face{}).Where("id = ?", m.ID).
+			Where("COALESCE(collision_radius, 0) <= ? AND (COALESCE(collision_radius, 0) <= 0 OR collision_radius > ?)", face.CollisionDist, radius).
+			UpdateColumns(Values{"collisions": gorm.Expr("collisions + 1"), "collision_radius": radius})
+
+		if res.Error != nil {
+			return false, res.Error
+		} else if res.RowsAffected == 0 {
+			return false, nil
+		}
+
+		m.Collisions++
+		m.CollisionRadius = radius
+		UpdateFaces.Store(true)
+
+		return true, nil
 	} else {
 		// Reopened rather than merely cleared: this narrows the cluster mid-run, and the markers
 		// ReviseMatches drops below have nothing to be rematched against if the run then stamps
@@ -337,6 +360,19 @@ func (m *Face) ResolveCollision(embeddings face.Embeddings, model face.ModelName
 	}
 
 	return true, nil
+}
+
+// CollisionNoted reports whether a collision at dist, whose radius could not narrow this cluster and
+// which is not close enough to make it ambiguous, would change nothing: a radius at or below it is
+// recorded already, or the cluster is narrowed further out, which such a radius must not widen.
+func (m *Face) CollisionNoted(dist float64) bool {
+	radius := dist - face.Epsilon
+
+	if dist < face.AmbiguityDist() || radius > face.CollisionDist {
+		return false
+	}
+
+	return m.CollisionRadius > face.CollisionDist || m.CollisionRadius > 0 && m.CollisionRadius <= radius
 }
 
 // InheritCollision narrows this cluster to the tightest collision bound its sources recorded.

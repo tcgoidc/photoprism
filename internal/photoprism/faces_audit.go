@@ -181,6 +181,12 @@ func (w *Faces) Audit(fix bool, subjUID string) (err error) {
 					continue
 				}
 
+				// A collision whose radius cannot narrow f1 is recorded at most once and not reported again.
+				if f1.CollisionNoted(dist) {
+					done[matchId] = true
+					continue
+				}
+
 				conflicts++
 
 				conflictClusters[f1.ID] = true

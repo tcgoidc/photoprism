@@ -518,6 +518,78 @@ func TestResolveFaceCollisions(t *testing.T) {
 	assert.Positive(t, resolved.CollisionRadius, "and the radius that separates the two people")
 }
 
+// TestResolveFaceCollisions_InertBand pins that a collision whose radius cannot narrow the cluster
+// is recorded once and not reported by later passes.
+func TestResolveFaceCollisions_InertBand(t *testing.T) {
+	restore := face.ConfiguredModel()
+	require.NoError(t, face.ConfigureEmbedder(face.EmbedderSettings{
+		Name:  face.ModelFaceNet,
+		Model: face.FindEmbeddingModel(face.ModelFaceNet),
+	}))
+	t.Cleanup(func() {
+		_ = face.ConfigureEmbedder(face.EmbedderSettings{Name: restore, Model: face.FindEmbeddingModel(restore)})
+	})
+
+	// Settles what the index already holds, so the counts below are this pair's alone.
+	baseline := -1
+
+	for range 5 {
+		c, _, err := ResolveFaceCollisions()
+		require.NoError(t, err)
+
+		if c == baseline {
+			break
+		}
+
+		baseline = c
+	}
+
+	dims := face.ExpectedDims()
+	dist := face.CollisionDist / 2
+	require.Greater(t, dist, face.AmbiguityDist())
+
+	theta := 2 * math.Asin(dist/2)
+	first := make([]float32, dims)
+	first[0] = 1
+	second := make([]float32, dims)
+	second[0] = float32(math.Cos(theta))
+	second[2] = float32(math.Sin(theta))
+
+	faceOne := entity.NewFace("uqcollisionband1", entity.SrcManual, face.NewEmbeddings([][]float32{first}), face.ModelFaceNet)
+	require.NoError(t, faceOne.Create())
+	faceTwo := entity.NewFace("uqcollisionband2", entity.SrcManual, face.NewEmbeddings([][]float32{second}), face.ModelFaceNet)
+	require.NoError(t, faceTwo.Create())
+	t.Cleanup(func() {
+		entity.UnscopedDb().Delete(entity.Face{}, "id IN (?)", []string{faceOne.ID, faceTwo.ID})
+	})
+
+	collisions := func(t *testing.T) int {
+		t.Helper()
+
+		n := 0
+
+		for _, id := range []string{faceOne.ID, faceTwo.ID} {
+			f := entity.FindFace(id)
+			require.NotNil(t, f)
+			n += f.Collisions
+		}
+
+		return n
+	}
+
+	c, _, err := ResolveFaceCollisions()
+	require.NoError(t, err)
+	assert.Equal(t, baseline+1, c, "the pair is reported once")
+	assert.Equal(t, 1, collisions(t))
+
+	for range 2 {
+		c, _, err = ResolveFaceCollisions()
+		require.NoError(t, err)
+		assert.Equal(t, baseline, c, "and not again")
+		assert.Equal(t, 1, collisions(t))
+	}
+}
+
 func TestRemoveAutoFaceClusters(t *testing.T) {
 	removed, err := RemoveAutoFaceClusters()
 

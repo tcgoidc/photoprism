@@ -233,7 +233,16 @@ func (m *Marker) SetName(name, src string) (changed bool, err error) {
 	m.SubjSrc = src
 	m.MarkerName = name
 
-	return true, m.SyncSubject(true)
+	if err = m.SyncSubject(true); err != nil {
+		return true, err
+	}
+
+	// A marker left without a cluster is matched again under its new name once the caller saves it.
+	if m.FaceID == "" {
+		m.MatchedAt = nil
+	}
+
+	return true, nil
 }
 
 // SaveForm updates the entity using form data and stores it in the database.
@@ -349,6 +358,10 @@ func (m *Marker) SetFace(f *Face, dist float64) (updated bool, err error) {
 	} else if reported {
 		log.Warnf("faces: marker %s face %s has ambiguous subjects %s <> %s, subject source %s", clean.Log(m.MarkerUID), clean.Log(f.ID), clean.Log(m.SubjUID), clean.Log(f.SubjUID), SrcString(m.SubjSrc))
 		return false, nil
+	} else if f.CollisionNoted(dist) {
+		// The cluster keeps refusing this marker without anything left to record, so it is not
+		// matched against it again until a forced run or the cluster is reopened.
+		return false, m.Matched()
 	} else {
 		return false, nil
 	}
