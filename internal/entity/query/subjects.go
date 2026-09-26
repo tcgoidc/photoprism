@@ -61,11 +61,9 @@ func SubjectMap() (result map[string]entity.Subject, err error) {
 	return result, err
 }
 
-// RemoveOrphanSubjects permanently removes dangling marker subjects from the index.
-//
-// A live verified person is kept: re-clustering leaves them unreferenced by design, and the row is
-// what makes the same name comparable across runs. A soft-deleted one is collected whatever the flag
-// says, since this is also the garbage collection for the tombstone MergeWith leaves.
+// RemoveOrphanSubjects permanently removes dangling marker subjects from the index. A live person
+// marked as Verified is kept, so the name stays comparable across re-clustering runs; a soft-deleted
+// one is collected whatever the flag says, as this also removes the tombstone MergeWith leaves.
 func RemoveOrphanSubjects() (removed int64, err error) {
 	res := UnscopedDb().
 		Where("subj_src = ?", entity.SrcMarker).

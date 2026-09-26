@@ -245,8 +245,8 @@ func newConsensusFixtures(t *testing.T) (fx consensusFixtures) {
 	consensusTestMarkers(t, fx.foreignSplit, core, alice, entity.SrcAuto, false, model)
 	consensusTestMarkers(t, fx.foreignSplit, 1, bob, entity.SrcAuto, false, foreign)
 
-	// People an XMP name may link to: one nobody confirmed, one a person verified without naming a
-	// face, and one who is deleted although a person named a face of theirs.
+	// People an XMP name may link to: one nobody confirmed, one marked as Verified without a face named by
+	// hand, and one who is deleted although a person named a face of theirs.
 	micha := conflictTestSubject(t, "Consensus Micha")
 	carol := conflictTestSubject(t, "Consensus Carol")
 	require.NoError(t, UnscopedDb().Model(carol).UpdateColumn("verified", true).Error)
@@ -303,7 +303,7 @@ func newConsensusFixtures(t *testing.T) (fx consensusFixtures) {
 	consensusTestMarkers(t, fx.xmpDeleted, core, alice, entity.SrcAuto, false, model)
 	consensusTestMarkers(t, fx.xmpDeleted, 1, erased.SubjUID, entity.SrcXmp, false, model)
 
-	// A verified subject that is not a person gets no vote either.
+	// A subject marked as Verified that is not a person gets no vote either.
 	require.NoError(t, UnscopedDb().Model(pet).UpdateColumn("verified", true).Error)
 	fx.xmpPet = consensusTestFace(t, 37)
 	consensusTestMarkers(t, fx.xmpPet, core, alice, entity.SrcAuto, false, model)
@@ -382,7 +382,7 @@ func TestAnonymousFaceConsensus(t *testing.T) {
 		assert.True(t, c.Split)
 	})
 	t.Run("XmpAlone", func(t *testing.T) {
-		// Carol is confirmed by the verified flag alone, and no vote comes from the matcher.
+		// Carol is confirmed by the Verified flag alone, and no vote comes from the matcher.
 		c := findConsensus(counts, fx.xmpAlone.ID)
 		require.NotNil(t, c)
 		assert.Equal(t, core, c.Votes)

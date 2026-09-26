@@ -20,8 +20,8 @@ type FacesConsensusResult struct {
 }
 
 // NameByConsensus names the unnamed clusters whose recognized faces agree on one person, counting
-// automatic names and XMP names of confirmed people. It also names the unnamed markers and keeps the
-// automatic source, so a reset clears the name.
+// automatic names and XMP names of people marked as Verified or named by hand on a valid marker. It
+// also names the unnamed markers and keeps the automatic source, so a reset clears the name.
 func (w *Faces) NameByConsensus() (result FacesConsensusResult, err error) {
 	if w.Canceled() {
 		return result, nil

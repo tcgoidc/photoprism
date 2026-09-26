@@ -13,7 +13,7 @@ type FaceConsensus struct {
 	FaceID  string
 	SubjUID string
 	// Votes counts the valid markers in the cluster's own embedding space that the matcher named, or
-	// that an XMP name links to an existing person whom a person confirmed.
+	// that an XMP name links to an existing person marked as Verified or named by hand on a valid marker.
 	Votes int
 	// Matched counts the votes the matcher cast, so a log can tell them apart from XMP votes.
 	Matched int

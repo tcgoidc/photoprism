@@ -140,7 +140,7 @@ func TestFaces_NameByConsensus(t *testing.T) {
 	xmpBob := consensusTestMarkers(t, xmp, 1, bob.SubjUID, entity.SrcXmp, false)
 	xmpUnnamed := consensusTestMarkers(t, xmp, 1, "", entity.SrcAuto, false)
 
-	// Carol is verified, so XMP names for her vote, alone or against another person.
+	// Carol is marked as Verified, so XMP names for her vote, alone or against another person.
 	carol := consensusTestSubject(t, "Consensus Carol")
 	require.NoError(t, entity.UnscopedDb().Model(carol).UpdateColumn("verified", true).Error)
 	xmpVote := consensusTestFace(t, 8)
