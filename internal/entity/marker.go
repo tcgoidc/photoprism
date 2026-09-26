@@ -464,46 +464,69 @@ func (m *Marker) SyncSubject(updateRelated bool) (err error) {
 		m.MarkerName = subj.SubjName
 	}
 
-	// Create known face for subject?
-	if m.FaceID != "" {
-		// Do nothing.
-	} else if f := m.Face(); f != nil {
+	f := m.face
+
+	if f != nil && f.ID != m.FaceID {
+		f = nil
+	}
+
+	// A marker without a cluster gets one of its own person, as far as it can seed one.
+	if m.FaceID == "" {
+		if f = m.Face(); f == nil {
+			return nil
+		}
+
 		m.FaceID = f.ID
 	}
 
-	// Update related markers? Only a cluster that carries this marker's person passes it on.
-	if m.FaceID == "" || m.SubjUID == "" {
-		// Do nothing.
-	} else if res := Db().Model(&Face{}).Where("id = ? AND subj_uid = ''", m.FaceID).UpdateColumn("subj_uid", m.SubjUID); res.Error != nil {
-		return fmt.Errorf("%s (update known face)", res.Error)
-	} else if !updateRelated {
+	if m.SubjUID == "" {
 		return nil
-	} else if err := Db().Model(&Marker{}).
+	}
+
+	// Name an unnamed cluster after this marker's person. Any other cluster is loaded only when the
+	// related markers may follow, so matching adds no query here.
+	if f == nil || f.SubjUID == "" {
+		if res := Db().Model(&Face{}).Where("id = ? AND subj_uid = ''", m.FaceID).UpdateColumn("subj_uid", m.SubjUID); res.Error != nil {
+			return fmt.Errorf("%s (update known face)", res.Error)
+		} else if res.RowsAffected > 0 {
+			// A local copy, so a face the caller holds still shows the cluster as it was loaded.
+			f = &Face{ID: m.FaceID, SubjUID: m.SubjUID}
+		} else if !updateRelated {
+			return nil
+		} else if f = FindFace(m.FaceID); f == nil {
+			return nil
+		}
+	}
+
+	if !updateRelated {
+		return nil
+	}
+
+	// A cluster named after another person keeps its markers, and this one is reported to it.
+	if f.SubjUID != m.SubjUID {
+		return m.resolveSubjectCollision(f)
+	}
+
+	// The cluster carries this marker's person, so its automatic markers follow.
+	if res := Db().Model(&Marker{}).
 		Where("marker_uid <> ?", m.MarkerUID).
 		Where("face_id = ?", m.FaceID).
 		Where("subj_src = ?", SrcAuto).
 		Where("subj_uid <> ?", m.SubjUID).
-		Where(fmt.Sprintf("face_id IN (SELECT id FROM %s WHERE id = ? AND subj_uid = ?)", Face{}.TableName()), m.FaceID, m.SubjUID).
-		UpdateColumns(Values{"subj_uid": m.SubjUID, "subj_src": SrcAuto, "marker_review": false}).Error; err != nil {
-		return fmt.Errorf("%s (update related markers)", err)
+		UpdateColumns(Values{"subj_uid": m.SubjUID, "subj_src": SrcAuto, "marker_review": false}); res.Error != nil {
+		return fmt.Errorf("%s (update related markers)", res.Error)
 	} else if res.RowsAffected > 0 {
-		if m.face != nil {
-			log.Debugf("markers: matched %s with %s", subj, m.FaceID)
-			return m.face.RefreshPhotos()
-		}
-
-		return nil
+		log.Debugf("markers: matched %s with %s", subj, m.FaceID)
+		return f.RefreshPhotos()
 	}
 
-	return m.resolveSubjectCollision()
+	return nil
 }
 
-// resolveSubjectCollision reports the marker to its cluster as a collision when the cluster is named
-// after another person, and moves the marker to a face of its own person, or leaves it for matching.
+// resolveSubjectCollision reports the marker to its cluster f as a collision when f is named after
+// another person, and moves the marker to a face of its own person, or leaves it for matching.
 // Reporting is best effort: the name is kept either way.
-func (m *Marker) resolveSubjectCollision() error {
-	f := FindFace(m.FaceID)
-
+func (m *Marker) resolveSubjectCollision(f *Face) error {
 	if f == nil || f.SubjUID == "" || f.SubjUID == m.SubjUID {
 		return nil
 	} else if m.MarkerInvalid {

@@ -1234,7 +1234,7 @@ func TestMarker_resolveSubjectCollision(t *testing.T) {
 		f := newFace(t, carol.SubjUID, 7501)
 		m := newMarker(t, f, 0.6*f.AcceptDist())
 
-		require.NoError(t, m.resolveSubjectCollision())
+		require.NoError(t, m.resolveSubjectCollision(FindFace(m.FaceID)))
 		detached(t, m)
 		assert.Equal(t, 1, FindFace(f.ID).Collisions)
 	})
@@ -1244,7 +1244,7 @@ func TestMarker_resolveSubjectCollision(t *testing.T) {
 		require.NoError(t, m.Updates(Values{"size": face.ClusterSizeThreshold, "score": face.ClusterScore("") + 10}))
 		t.Cleanup(func() { UnscopedDb().Delete(Face{}, "subj_uid = ?", dave.SubjUID) })
 
-		require.NoError(t, m.resolveSubjectCollision())
+		require.NoError(t, m.resolveSubjectCollision(FindFace(m.FaceID)))
 		assert.Equal(t, 1, FindFace(f.ID).Collisions)
 
 		stored := FindMarker(m.MarkerUID)
@@ -1298,7 +1298,7 @@ func TestMarker_resolveSubjectCollision(t *testing.T) {
 		m := newMarker(t, f, 0.6*f.AcceptDist())
 		m.MarkerInvalid = true
 
-		require.NoError(t, m.resolveSubjectCollision())
+		require.NoError(t, m.resolveSubjectCollision(FindFace(m.FaceID)))
 		detached(t, m)
 		assert.Zero(t, FindFace(f.ID).Collisions, "a region that is not a face is no evidence")
 	})
@@ -1306,7 +1306,7 @@ func TestMarker_resolveSubjectCollision(t *testing.T) {
 		f := newFace(t, carol.SubjUID, 7502)
 		m := newMarker(t, f, -1)
 
-		require.NoError(t, m.resolveSubjectCollision())
+		require.NoError(t, m.resolveSubjectCollision(FindFace(m.FaceID)))
 		detached(t, m)
 		assert.Zero(t, FindFace(f.ID).Collisions, "nothing to compare, so nothing is reported")
 	})
@@ -1315,14 +1315,14 @@ func TestMarker_resolveSubjectCollision(t *testing.T) {
 		m := newMarker(t, f, 0.6*f.AcceptDist())
 		require.NoError(t, UnscopedDb().Model(&Face{}).Where("id = ?", f.ID).UpdateColumn("embedding_json", []byte{}).Error)
 
-		require.NoError(t, m.resolveSubjectCollision(), "the name is kept")
+		require.NoError(t, m.resolveSubjectCollision(FindFace(m.FaceID)), "the name is kept")
 		detached(t, m)
 	})
 	t.Run("SamePerson", func(t *testing.T) {
 		f := newFace(t, dave.SubjUID, 7504)
 		m := newMarker(t, f, 0.6*f.AcceptDist())
 
-		require.NoError(t, m.resolveSubjectCollision())
+		require.NoError(t, m.resolveSubjectCollision(FindFace(m.FaceID)))
 		assert.Equal(t, f.ID, FindMarker(m.MarkerUID).FaceID)
 		assert.Zero(t, FindFace(f.ID).Collisions)
 	})
@@ -1330,18 +1330,18 @@ func TestMarker_resolveSubjectCollision(t *testing.T) {
 		f := newFace(t, "", 7505)
 		m := newMarker(t, f, 0.6*f.AcceptDist())
 
-		require.NoError(t, m.resolveSubjectCollision())
+		require.NoError(t, m.resolveSubjectCollision(FindFace(m.FaceID)))
 		assert.Equal(t, f.ID, FindMarker(m.MarkerUID).FaceID)
 	})
 	t.Run("NoFace", func(t *testing.T) {
 		m := &Marker{MarkerUID: rnd.GenerateUID('m'), MarkerType: MarkerFace, SubjUID: dave.SubjUID}
-		require.NoError(t, m.resolveSubjectCollision())
+		require.NoError(t, m.resolveSubjectCollision(FindFace(m.FaceID)))
 	})
 	t.Run("NoUID", func(t *testing.T) {
 		f := newFace(t, carol.SubjUID, 7506)
 		m := &Marker{MarkerType: MarkerFace, SubjUID: dave.SubjUID, FaceID: f.ID, MatchedAt: TimeStamp()}
 
-		require.NoError(t, m.resolveSubjectCollision())
+		require.NoError(t, m.resolveSubjectCollision(FindFace(m.FaceID)))
 		assert.Empty(t, m.FaceID)
 		assert.Nil(t, m.MatchedAt)
 	})
