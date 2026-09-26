@@ -254,3 +254,35 @@ func TestCreateMarkerSubjects_Sources(t *testing.T) {
 		assert.Empty(t, entity.FindFace(sharedXmp.ID).SubjUID, "the XMP marker still names no cluster")
 	})
 }
+
+// TestCreateMarkerSubjects_FormerName pins that an XMP name a person no longer carries is not linked
+// to them after a rename.
+func TestCreateMarkerSubjects_FormerName(t *testing.T) {
+	suffix := rnd.Base36(6)
+	former := "Former Xmp Anna " + suffix
+
+	renamed := conflictTestSubject(t, former)
+	_, err := renamed.UpdateName("Former Xmp Anne " + suffix)
+	require.NoError(t, err)
+
+	m := entity.Marker{
+		MarkerUID:  rnd.GenerateUID('m'),
+		FileUID:    rnd.GenerateUID(entity.FileUID),
+		MarkerType: entity.MarkerFace,
+		MarkerName: former,
+		SubjSrc:    entity.SrcXmp,
+		W:          0.1,
+		H:          0.1,
+	}
+
+	require.NoError(t, UnscopedDb().Create(&m).Error)
+	t.Cleanup(func() { UnscopedDb().Delete(entity.Marker{}, "marker_uid = ?", m.MarkerUID) })
+
+	_, err = CreateMarkerSubjects()
+	require.NoError(t, err)
+
+	got := entity.FindMarker(m.MarkerUID)
+	require.NotNil(t, got)
+	assert.Empty(t, got.SubjUID)
+	assert.Equal(t, former, got.MarkerName)
+}
