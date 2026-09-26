@@ -77,9 +77,10 @@ func RemoveOrphanSubjects() (removed int64, err error) {
 	return res.RowsAffected, res.Error
 }
 
-// CreateMarkerSubjects adds and references known marker subjects. A name from a source that may not
+// CreateMarkerSubjects adds and references known marker subjects, and returns how many subjects it
+// resolved and how many XMP markers it linked to existing people. A name from a source that may not
 // name its person, such as XMP, is linked only to an existing person and never names the cluster.
-func CreateMarkerSubjects() (affected int64, err error) {
+func CreateMarkerSubjects() (subjects, linked int64, err error) {
 	var markers entity.Markers
 
 	if err = Db().
@@ -89,9 +90,9 @@ func CreateMarkerSubjects() (affected int64, err error) {
 		// marker of the same name looks for it.
 		Order("marker_name, subj_src").
 		Find(&markers).Error; err != nil {
-		return affected, err
+		return subjects, linked, err
 	} else if len(markers) == 0 {
-		return affected, nil
+		return subjects, linked, nil
 	}
 
 	var name string
@@ -104,10 +105,10 @@ func CreateMarkerSubjects() (affected int64, err error) {
 			if found := entity.FindSubjectByName(m.MarkerName, false); found == nil || found.Deleted() || !found.IsPerson() {
 				continue
 			} else if err = m.Updates(entity.Values{"subj_uid": found.SubjUID, "marker_name": found.SubjName, "marker_review": false}); err != nil {
-				return affected, err
+				return subjects, linked, err
 			}
 
-			affected++
+			linked++
 			continue
 		}
 
@@ -120,7 +121,7 @@ func CreateMarkerSubjects() (affected int64, err error) {
 			log.Errorf("faces: failed to add subject %s", clean.Log(m.MarkerName))
 			continue
 		} else {
-			affected++
+			subjects++
 		}
 
 		name = m.MarkerName
@@ -128,15 +129,15 @@ func CreateMarkerSubjects() (affected int64, err error) {
 		m.MarkerReview = false
 
 		if err = m.Updates(entity.Values{"subj_uid": m.SubjUID, "marker_review": m.MarkerReview}); err != nil {
-			return affected, err
+			return subjects, linked, err
 		}
 
 		if m.FaceID == "" {
 			continue
 		} else if err = Db().Model(&entity.Face{}).Where("id = ? AND subj_uid = ''", m.FaceID).Update("subj_uid", m.SubjUID).Error; err != nil {
-			return affected, err
+			return subjects, linked, err
 		}
 	}
 
-	return affected, err
+	return subjects, linked, err
 }

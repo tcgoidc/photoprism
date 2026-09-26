@@ -67,10 +67,11 @@ func TestRemoveOrphanSubjects(t *testing.T) {
 }
 
 func TestCreateMarkerSubjects(t *testing.T) {
-	affected, err := CreateMarkerSubjects()
+	subjects, linked, err := CreateMarkerSubjects()
 
 	assert.NoError(t, err)
-	assert.LessOrEqual(t, int64(0), affected)
+	assert.LessOrEqual(t, int64(0), subjects)
+	assert.LessOrEqual(t, int64(0), linked)
 }
 
 // TestRemoveOrphanSubjects_Verified covers the flag that survives a face reset.
@@ -162,7 +163,7 @@ func TestCreateMarkerSubjects_Sources(t *testing.T) {
 	})
 
 	// Settles what the fixtures leave, so the count below is this test's alone.
-	_, err := CreateMarkerSubjects()
+	_, _, err := CreateMarkerSubjects()
 	require.NoError(t, err)
 
 	newMarker := func(t *testing.T, f *entity.Face, name, src string) string {
@@ -201,12 +202,12 @@ func TestCreateMarkerSubjects_Sources(t *testing.T) {
 	sharedManual := consensusTestFace(t, 27)
 	newMarker(t, sharedManual, "Sources Shared Finn", entity.SrcManual)
 
-	affected, err := CreateMarkerSubjects()
+	subjects, linked, err := CreateMarkerSubjects()
 	require.NoError(t, err)
 
-	t.Run("Affected", func(t *testing.T) {
-		// Two names resolved for manual markers, and two XMP markers linked.
-		assert.Equal(t, int64(4), affected)
+	t.Run("Counts", func(t *testing.T) {
+		assert.Equal(t, int64(2), subjects, "two names resolved for manual markers")
+		assert.Equal(t, int64(2), linked, "two XMP markers linked to existing people")
 	})
 	t.Run("XmpExistingPerson", func(t *testing.T) {
 		m := entity.FindMarker(xmpExistingMarker)
@@ -278,7 +279,7 @@ func TestCreateMarkerSubjects_FormerName(t *testing.T) {
 	require.NoError(t, UnscopedDb().Create(&m).Error)
 	t.Cleanup(func() { UnscopedDb().Delete(entity.Marker{}, "marker_uid = ?", m.MarkerUID) })
 
-	_, err = CreateMarkerSubjects()
+	_, _, err = CreateMarkerSubjects()
 	require.NoError(t, err)
 
 	got := entity.FindMarker(m.MarkerUID)
