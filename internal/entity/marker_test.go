@@ -963,6 +963,149 @@ func TestMarker_NamesFace(t *testing.T) {
 	})
 }
 
+// TestMarker_SyncSubjectRelated pins that a manual name updates a cluster's automatic markers only
+// when the cluster carries that person.
+func TestMarker_SyncSubjectRelated(t *testing.T) {
+	newSubject := func(t *testing.T, name string) *Subject {
+		t.Helper()
+
+		s := NewSubject(name, SubjPerson, SrcManual)
+		require.NotNil(t, s)
+		require.NoError(t, s.Create())
+		t.Cleanup(func() { UnscopedDb().Delete(&Subject{}, "subj_uid = ?", s.SubjUID) })
+
+		return s
+	}
+
+	newFace := func(t *testing.T, subjUID string, seed uint64) *Face {
+		t.Helper()
+
+		f := NewFace(subjUID, SrcAuto, face.Embeddings{face.FixtureEmbedding(seed)}, face.EmbeddingModelName())
+		require.NotNil(t, f)
+		require.NoError(t, f.Create())
+		t.Cleanup(func() { UnscopedDb().Delete(&Face{}, "id = ?", f.ID) })
+
+		return f
+	}
+
+	newMarkers := func(t *testing.T, f *Face, n int, subjUID, subjSrc string) []string {
+		t.Helper()
+
+		uids := make([]string, 0, n)
+
+		for range n {
+			m := Marker{
+				MarkerUID:  rnd.GenerateUID('m'),
+				MarkerType: MarkerFace,
+				SubjUID:    subjUID,
+				SubjSrc:    subjSrc,
+				FaceID:     f.ID,
+				FaceDist:   0.1,
+				EmbedModel: f.EmbedModel,
+				MatchedAt:  TimeStamp(),
+				W:          0.1,
+				H:          0.1,
+			}
+
+			require.NoError(t, UnscopedDb().Create(&m).Error)
+			t.Cleanup(func() { UnscopedDb().Delete(&Marker{}, "marker_uid = ?", m.MarkerUID) })
+
+			uids = append(uids, m.MarkerUID)
+		}
+
+		return uids
+	}
+
+	subjects := func(t *testing.T, uids []string) []string {
+		t.Helper()
+
+		result := make([]string, len(uids))
+
+		for i, uid := range uids {
+			m := FindMarker(uid)
+			require.NotNil(t, m, uid)
+			result[i] = m.SubjUID
+		}
+
+		return result
+	}
+
+	repeat := func(s string, n int) []string {
+		result := make([]string, n)
+
+		for i := range result {
+			result[i] = s
+		}
+
+		return result
+	}
+
+	setName := func(t *testing.T, uid, name string) *Marker {
+		t.Helper()
+
+		m := FindMarker(uid)
+		require.NotNil(t, m)
+
+		changed, err := m.SetName(name, SrcManual)
+		require.NoError(t, err)
+		require.True(t, changed)
+		require.NoError(t, m.Save())
+
+		return FindMarker(uid)
+	}
+
+	t.Run("OtherPersonsCluster", func(t *testing.T) {
+		carol := newSubject(t, "Sync Related Carol")
+		dave := newSubject(t, "Sync Related Dave")
+		f := newFace(t, carol.SubjUID, 7101)
+		uids := newMarkers(t, f, 5, carol.SubjUID, SrcAuto)
+
+		got := setName(t, uids[0], dave.SubjName)
+		assert.Equal(t, dave.SubjUID, got.SubjUID)
+		assert.Equal(t, SrcManual, got.SubjSrc)
+		assert.Equal(t, f.ID, got.FaceID)
+		assert.Equal(t, repeat(carol.SubjUID, 4), subjects(t, uids[1:]), "only the named marker changes")
+		assert.Equal(t, carol.SubjUID, FindFace(f.ID).SubjUID)
+		assert.Equal(t, carol.SubjName, FindSubject(carol.SubjUID).SubjName)
+	})
+	t.Run("RejectedMatchInOtherPersonsCluster", func(t *testing.T) {
+		xena := newSubject(t, "Sync Related Xena")
+		f := newFace(t, xena.SubjUID, 7102)
+		auto := newMarkers(t, f, 3, xena.SubjUID, SrcAuto)
+		unnamed := newMarkers(t, f, 1, "", SrcAuto)
+		rejected := newMarkers(t, f, 1, "", SrcManual)
+
+		got := setName(t, rejected[0], "Sync Related Yuri")
+		t.Cleanup(func() { UnscopedDb().Delete(&Subject{}, "subj_uid = ?", got.SubjUID) })
+		require.NotEmpty(t, got.SubjUID)
+		assert.NotEqual(t, xena.SubjUID, got.SubjUID)
+		assert.Equal(t, repeat(xena.SubjUID, 3), subjects(t, auto))
+		assert.Equal(t, []string{""}, subjects(t, unnamed))
+		assert.Equal(t, xena.SubjUID, FindFace(f.ID).SubjUID)
+	})
+	t.Run("UnnamedCluster", func(t *testing.T) {
+		erin := newSubject(t, "Sync Related Erin")
+		f := newFace(t, "", 7103)
+		uids := newMarkers(t, f, 4, "", SrcAuto)
+
+		got := setName(t, uids[0], erin.SubjName)
+		assert.Equal(t, erin.SubjUID, got.SubjUID)
+		assert.Equal(t, erin.SubjUID, FindFace(f.ID).SubjUID, "a manual name still names the cluster")
+		assert.Equal(t, repeat(erin.SubjUID, 3), subjects(t, uids[1:]), "and its automatic markers")
+	})
+	t.Run("SamePersonsCluster", func(t *testing.T) {
+		fred := newSubject(t, "Sync Related Fred")
+		f := newFace(t, fred.SubjUID, 7104)
+		named := newMarkers(t, f, 2, fred.SubjUID, SrcAuto)
+		unnamed := newMarkers(t, f, 2, "", SrcAuto)
+
+		got := setName(t, unnamed[0], fred.SubjName)
+		assert.Equal(t, fred.SubjUID, got.SubjUID)
+		assert.Equal(t, repeat(fred.SubjUID, 2), subjects(t, named))
+		assert.Equal(t, []string{fred.SubjUID}, subjects(t, unnamed[1:]), "related markers still follow the cluster's own person")
+	})
+}
+
 // TestMarker_SetName_Unlinked pins that entering the same name again links a marker without a person,
 // while a linked marker with that name is left alone.
 func TestMarker_SetName_Unlinked(t *testing.T) {

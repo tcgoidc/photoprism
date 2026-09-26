@@ -458,7 +458,7 @@ func (m *Marker) SyncSubject(updateRelated bool) (err error) {
 		m.FaceID = f.ID
 	}
 
-	// Update related markers?
+	// Update related markers? Only a cluster that carries this marker's person passes it on.
 	if m.FaceID == "" || m.SubjUID == "" {
 		// Do nothing.
 	} else if res := Db().Model(&Face{}).Where("id = ? AND subj_uid = ''", m.FaceID).UpdateColumn("subj_uid", m.SubjUID); res.Error != nil {
@@ -470,6 +470,7 @@ func (m *Marker) SyncSubject(updateRelated bool) (err error) {
 		Where("face_id = ?", m.FaceID).
 		Where("subj_src = ?", SrcAuto).
 		Where("subj_uid <> ?", m.SubjUID).
+		Where(fmt.Sprintf("face_id IN (SELECT id FROM %s WHERE id = ? AND subj_uid = ?)", Face{}.TableName()), m.FaceID, m.SubjUID).
 		UpdateColumns(Values{"subj_uid": m.SubjUID, "subj_src": SrcAuto, "marker_review": false}).Error; err != nil {
 		return fmt.Errorf("%s (update related markers)", err)
 	} else if res.RowsAffected > 0 && m.face != nil {

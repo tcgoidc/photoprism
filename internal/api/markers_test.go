@@ -7,9 +7,15 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 
+	"github.com/photoprism/photoprism/internal/ai/face"
+	"github.com/photoprism/photoprism/internal/config"
+	"github.com/photoprism/photoprism/internal/entity"
 	"github.com/photoprism/photoprism/internal/form"
+	"github.com/photoprism/photoprism/pkg/authn"
+	"github.com/photoprism/photoprism/pkg/rnd"
 )
 
 func TestCreateMarker(t *testing.T) {
@@ -354,4 +360,76 @@ func TestClearMarkerSubject(t *testing.T) {
 
 		assert.Equal(t, http.StatusOK, r.Code)
 	})
+}
+
+// TestUpdateMarker_NamedCluster pins that naming one marker in a cluster named after another
+// person changes only that marker.
+func TestUpdateMarker_NamedCluster(t *testing.T) {
+	app, router, conf := NewApiTest()
+	UpdateMarker(router)
+
+	prevAuthMode := conf.AuthMode()
+	conf.SetAuthMode(config.AuthModePasswd)
+	t.Cleanup(func() { conf.SetAuthMode(prevAuthMode) })
+
+	sess := entity.NewSession(conf.SessionMaxAge(), 0)
+	sess.SetUser(entity.UserFixtures.Pointer("alice"))
+	sess.SetScope("files")
+	sess.SetProvider(authn.ProviderApplication)
+	require.NoError(t, sess.Create())
+	t.Cleanup(func() { entity.UnscopedDb().Unscoped().Delete(sess) })
+	require.False(t, sess.SeesPrivatePeople())
+
+	person := entity.NewSubject("Named Cluster Person", entity.SubjPerson, entity.SrcManual)
+	require.NotNil(t, person)
+	require.NoError(t, person.Create())
+	t.Cleanup(func() { entity.UnscopedDb().Delete(&entity.Subject{}, "subj_uid = ?", person.SubjUID) })
+	markPrivate(t, person, false)
+
+	f := entity.NewFace(person.SubjUID, entity.SrcAuto, face.Embeddings{face.FixtureEmbedding(7201)}, face.EmbeddingModelName())
+	require.NotNil(t, f)
+	require.NoError(t, f.Create())
+	t.Cleanup(func() { entity.UnscopedDb().Delete(&entity.Face{}, "id = ?", f.ID) })
+
+	newMarker := func(subjUID, subjSrc string) string {
+		m := entity.Marker{
+			MarkerUID:  rnd.GenerateUID('m'),
+			FileUID:    entity.FileFixtures.Get("exampleDNGFile.dng").FileUID,
+			MarkerType: entity.MarkerFace,
+			SubjUID:    subjUID,
+			SubjSrc:    subjSrc,
+			FaceID:     f.ID,
+			FaceDist:   0.1,
+			EmbedModel: f.EmbedModel,
+			MatchedAt:  entity.TimeStamp(),
+			W:          0.1,
+			H:          0.1,
+		}
+
+		require.NoError(t, entity.UnscopedDb().Create(&m).Error)
+		t.Cleanup(func() { entity.UnscopedDb().Delete(&entity.Marker{}, "marker_uid = ?", m.MarkerUID) })
+
+		return m.MarkerUID
+	}
+
+	auto := newMarker(person.SubjUID, entity.SrcAuto)
+	unnamed := newMarker("", entity.SrcAuto)
+	rejected := newMarker("", entity.SrcManual)
+
+	b, err := json.Marshal(form.Marker{SubjSrc: entity.SrcManual, MarkerName: "Named Cluster Other"})
+	require.NoError(t, err)
+
+	r := AuthenticatedRequestWithBody(app, http.MethodPut, "/api/v1/markers/"+rejected, string(b), sess.AuthToken())
+	require.Equal(t, http.StatusOK, r.Code, r.Body.String())
+
+	t.Cleanup(func() { entity.UnscopedDb().Delete(&entity.Subject{}, "subj_name = ?", "Named Cluster Other") })
+
+	named := entity.FindMarker(rejected)
+	require.NotNil(t, named)
+	require.NotEmpty(t, named.SubjUID, "the named marker changes")
+	assert.NotEqual(t, person.SubjUID, named.SubjUID)
+
+	assert.Equal(t, person.SubjUID, entity.FindMarker(auto).SubjUID)
+	assert.Empty(t, entity.FindMarker(unnamed).SubjUID)
+	assert.Equal(t, person.SubjUID, entity.FindFace(f.ID).SubjUID)
 }
