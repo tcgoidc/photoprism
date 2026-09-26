@@ -964,7 +964,7 @@ func TestMarker_NamesFace(t *testing.T) {
 }
 
 // TestMarker_SyncSubjectRelated pins that a manual name updates a cluster's automatic markers only
-// when the cluster carries that person.
+// when the cluster carries that person, and reports a marker named after someone else to the cluster.
 func TestMarker_SyncSubjectRelated(t *testing.T) {
 	newSubject := func(t *testing.T, name string) *Subject {
 		t.Helper()
@@ -972,7 +972,7 @@ func TestMarker_SyncSubjectRelated(t *testing.T) {
 		s := NewSubject(name, SubjPerson, SrcManual)
 		require.NotNil(t, s)
 		require.NoError(t, s.Create())
-		t.Cleanup(func() { UnscopedDb().Delete(&Subject{}, "subj_uid = ?", s.SubjUID) })
+		t.Cleanup(func() { UnscopedDb().Delete(Subject{}, "subj_uid = ?", s.SubjUID) })
 
 		return s
 	}
@@ -983,32 +983,38 @@ func TestMarker_SyncSubjectRelated(t *testing.T) {
 		f := NewFace(subjUID, SrcAuto, face.Embeddings{face.FixtureEmbedding(seed)}, face.EmbeddingModelName())
 		require.NotNil(t, f)
 		require.NoError(t, f.Create())
-		t.Cleanup(func() { UnscopedDb().Delete(&Face{}, "id = ?", f.ID) })
+		t.Cleanup(func() { UnscopedDb().Delete(Face{}, "id = ?", f.ID) })
 
 		return f
 	}
 
-	newMarkers := func(t *testing.T, f *Face, n int, subjUID, subjSrc string) []string {
+	// newMarkers stores n markers at the given fraction of the distance the cluster accepts.
+	newMarkers := func(t *testing.T, f *Face, n int, subjUID, subjSrc string, fraction float64) []string {
 		t.Helper()
 
 		uids := make([]string, 0, n)
+		dist := fraction * f.AcceptDist()
 
-		for range n {
+		for i := range n {
+			emb := face.Embeddings{face.FixtureEmbeddingAt(f.Embedding(), dist, uint64(9000+i))}
 			m := Marker{
-				MarkerUID:  rnd.GenerateUID('m'),
-				MarkerType: MarkerFace,
-				SubjUID:    subjUID,
-				SubjSrc:    subjSrc,
-				FaceID:     f.ID,
-				FaceDist:   0.1,
-				EmbedModel: f.EmbedModel,
-				MatchedAt:  TimeStamp(),
-				W:          0.1,
-				H:          0.1,
+				MarkerUID:      rnd.GenerateUID('m'),
+				MarkerType:     MarkerFace,
+				SubjUID:        subjUID,
+				SubjSrc:        subjSrc,
+				FaceID:         f.ID,
+				FaceDist:       dist,
+				EmbeddingsJSON: emb.JSON(),
+				EmbedModel:     f.EmbedModel,
+				Size:           face.ClusterSizeThreshold,
+				Score:          face.ClusterScore("") + 10,
+				MatchedAt:      TimeStamp(),
+				W:              0.1,
+				H:              0.1,
 			}
 
 			require.NoError(t, UnscopedDb().Create(&m).Error)
-			t.Cleanup(func() { UnscopedDb().Delete(&Marker{}, "marker_uid = ?", m.MarkerUID) })
+			t.Cleanup(func() { UnscopedDb().Delete(Marker{}, "marker_uid = ?", m.MarkerUID) })
 
 			uids = append(uids, m.MarkerUID)
 		}
@@ -1040,6 +1046,20 @@ func TestMarker_SyncSubjectRelated(t *testing.T) {
 		return result
 	}
 
+	// anchored checks that a corrected marker left the cluster for a face of its new person.
+	anchored := func(t *testing.T, m *Marker, f *Face, subjUID string) {
+		t.Helper()
+
+		t.Cleanup(func() { UnscopedDb().Delete(Face{}, "subj_uid = ? AND id <> ?", subjUID, f.ID) })
+		require.NotEmpty(t, m.FaceID, "the corrected marker gets a face of its own person")
+		assert.NotEqual(t, f.ID, m.FaceID, "and leaves the cluster")
+		assert.NotNil(t, m.MatchedAt)
+
+		if own := FindFace(m.FaceID); assert.NotNil(t, own) {
+			assert.Equal(t, subjUID, own.SubjUID)
+		}
+	}
+
 	setName := func(t *testing.T, uid, name string) *Marker {
 		t.Helper()
 
@@ -1058,51 +1078,272 @@ func TestMarker_SyncSubjectRelated(t *testing.T) {
 		carol := newSubject(t, "Sync Related Carol")
 		dave := newSubject(t, "Sync Related Dave")
 		f := newFace(t, carol.SubjUID, 7101)
-		uids := newMarkers(t, f, 5, carol.SubjUID, SrcAuto)
+		require.Greater(t, 0.6*f.AcceptDist()-face.Epsilon, max(face.AmbiguityDist(), face.CollisionDist), "the correction must narrow")
+		near := newMarkers(t, f, 2, carol.SubjUID, SrcAuto, 0.2)
+		corrected := newMarkers(t, f, 1, carol.SubjUID, SrcAuto, 0.6)[0]
+		far := newMarkers(t, f, 2, carol.SubjUID, SrcAuto, 0.9)
 
-		got := setName(t, uids[0], dave.SubjName)
+		got := setName(t, corrected, dave.SubjName)
 		assert.Equal(t, dave.SubjUID, got.SubjUID)
 		assert.Equal(t, SrcManual, got.SubjSrc)
-		assert.Equal(t, f.ID, got.FaceID)
-		assert.Equal(t, repeat(carol.SubjUID, 4), subjects(t, uids[1:]), "only the named marker changes")
-		assert.Equal(t, carol.SubjUID, FindFace(f.ID).SubjUID)
+		anchored(t, got, f, dave.SubjUID)
+
+		cluster := FindFace(f.ID)
+		require.NotNil(t, cluster)
+		assert.Equal(t, carol.SubjUID, cluster.SubjUID)
+		assert.Equal(t, 1, cluster.Collisions)
+		assert.Equal(t, int(face.RegularFace), cluster.FaceKind, "narrowed rather than ambiguous")
+		assert.Less(t, cluster.CollisionRadius, got.Embeddings().Dist(f.Embedding()))
+
+		assert.Equal(t, repeat(carol.SubjUID, 2), subjects(t, near), "markers inside the new radius keep their person")
+		assert.Equal(t, repeat("", 2), subjects(t, far), "markers beyond it are released")
 		assert.Equal(t, carol.SubjName, FindSubject(carol.SubjUID).SubjName)
+	})
+	t.Run("AmbiguousCluster", func(t *testing.T) {
+		gina := newSubject(t, "Sync Related Gina")
+		hank := newSubject(t, "Sync Related Hank")
+		f := newFace(t, gina.SubjUID, 7105)
+		others := newMarkers(t, f, 2, gina.SubjUID, SrcAuto, 0.5)
+		corrected := newMarkers(t, f, 1, gina.SubjUID, SrcAuto, face.AmbiguityDist()/2/f.AcceptDist())[0]
+
+		got := setName(t, corrected, hank.SubjName)
+		assert.Equal(t, hank.SubjUID, got.SubjUID)
+		anchored(t, got, f, hank.SubjUID)
+
+		cluster := FindFace(f.ID)
+		require.NotNil(t, cluster)
+		assert.Equal(t, int(face.AmbiguousFace), cluster.FaceKind)
+		assert.Equal(t, 1, cluster.Collisions)
+		assert.Equal(t, repeat(gina.SubjUID, 2), subjects(t, others))
 	})
 	t.Run("RejectedMatchInOtherPersonsCluster", func(t *testing.T) {
 		xena := newSubject(t, "Sync Related Xena")
 		f := newFace(t, xena.SubjUID, 7102)
-		auto := newMarkers(t, f, 3, xena.SubjUID, SrcAuto)
-		unnamed := newMarkers(t, f, 1, "", SrcAuto)
-		rejected := newMarkers(t, f, 1, "", SrcManual)
+		auto := newMarkers(t, f, 3, xena.SubjUID, SrcAuto, 0.2)
+		unnamed := newMarkers(t, f, 1, "", SrcAuto, 0.2)
+		rejected := newMarkers(t, f, 1, "", SrcManual, 0.6)
 
 		got := setName(t, rejected[0], "Sync Related Yuri")
-		t.Cleanup(func() { UnscopedDb().Delete(&Subject{}, "subj_uid = ?", got.SubjUID) })
+		t.Cleanup(func() { UnscopedDb().Delete(Subject{}, "subj_uid = ?", got.SubjUID) })
 		require.NotEmpty(t, got.SubjUID)
 		assert.NotEqual(t, xena.SubjUID, got.SubjUID)
+		anchored(t, got, f, got.SubjUID)
 		assert.Equal(t, repeat(xena.SubjUID, 3), subjects(t, auto))
 		assert.Equal(t, []string{""}, subjects(t, unnamed))
 		assert.Equal(t, xena.SubjUID, FindFace(f.ID).SubjUID)
+		assert.Equal(t, 1, FindFace(f.ID).Collisions)
 	})
 	t.Run("UnnamedCluster", func(t *testing.T) {
 		erin := newSubject(t, "Sync Related Erin")
 		f := newFace(t, "", 7103)
-		uids := newMarkers(t, f, 4, "", SrcAuto)
+		uids := newMarkers(t, f, 4, "", SrcAuto, 0.5)
 
 		got := setName(t, uids[0], erin.SubjName)
 		assert.Equal(t, erin.SubjUID, got.SubjUID)
+		assert.Equal(t, f.ID, got.FaceID)
 		assert.Equal(t, erin.SubjUID, FindFace(f.ID).SubjUID, "a manual name still names the cluster")
+		assert.Zero(t, FindFace(f.ID).Collisions)
 		assert.Equal(t, repeat(erin.SubjUID, 3), subjects(t, uids[1:]), "and its automatic markers")
 	})
 	t.Run("SamePersonsCluster", func(t *testing.T) {
 		fred := newSubject(t, "Sync Related Fred")
 		f := newFace(t, fred.SubjUID, 7104)
-		named := newMarkers(t, f, 2, fred.SubjUID, SrcAuto)
-		unnamed := newMarkers(t, f, 2, "", SrcAuto)
+		named := newMarkers(t, f, 2, fred.SubjUID, SrcAuto, 0.5)
+		unnamed := newMarkers(t, f, 2, "", SrcAuto, 0.5)
 
 		got := setName(t, unnamed[0], fred.SubjName)
 		assert.Equal(t, fred.SubjUID, got.SubjUID)
+		assert.Equal(t, f.ID, got.FaceID)
+		assert.Zero(t, FindFace(f.ID).Collisions)
 		assert.Equal(t, repeat(fred.SubjUID, 2), subjects(t, named))
 		assert.Equal(t, []string{fred.SubjUID}, subjects(t, unnamed[1:]), "related markers still follow the cluster's own person")
+	})
+	t.Run("UnownedNameRenames", func(t *testing.T) {
+		ivan := newSubject(t, "Sync Related Ivan")
+		f := newFace(t, ivan.SubjUID, 7106)
+		uids := newMarkers(t, f, 3, ivan.SubjUID, SrcAuto, 0.5)
+
+		got := setName(t, uids[0], "Sync Related Ivo")
+		assert.Equal(t, ivan.SubjUID, got.SubjUID, "a name nobody owns renames the person")
+		assert.Equal(t, "Sync Related Ivo", FindSubject(ivan.SubjUID).SubjName)
+		assert.Equal(t, f.ID, got.FaceID)
+		assert.Zero(t, FindFace(f.ID).Collisions)
+		assert.Equal(t, repeat(ivan.SubjUID, 2), subjects(t, uids[1:]))
+	})
+}
+
+func TestMarker_resolveSubjectCollision(t *testing.T) {
+	carol := NewSubject("Resolve Collision Carol", SubjPerson, SrcManual)
+	require.NoError(t, carol.Create())
+	dave := NewSubject("Resolve Collision Dave", SubjPerson, SrcManual)
+	require.NoError(t, dave.Create())
+	t.Cleanup(func() { UnscopedDb().Delete(Subject{}, "subj_uid IN (?)", []string{carol.SubjUID, dave.SubjUID}) })
+
+	newFace := func(t *testing.T, subjUID string, seed uint64) *Face {
+		t.Helper()
+
+		f := NewFace(subjUID, SrcAuto, face.Embeddings{face.FixtureEmbedding(seed)}, face.EmbeddingModelName())
+		require.NoError(t, f.Create())
+		t.Cleanup(func() { UnscopedDb().Delete(Face{}, "id = ?", f.ID) })
+
+		return f
+	}
+
+	// newMarker stores a marker of Dave in the cluster, with an embedding unless dist is negative.
+	newMarker := func(t *testing.T, f *Face, dist float64) *Marker {
+		t.Helper()
+
+		m := &Marker{
+			MarkerUID:  rnd.GenerateUID('m'),
+			MarkerType: MarkerFace,
+			SubjUID:    dave.SubjUID,
+			SubjSrc:    SrcManual,
+			FaceID:     f.ID,
+			FaceDist:   dist,
+			EmbedModel: f.EmbedModel,
+			MatchedAt:  TimeStamp(),
+			W:          0.1,
+			H:          0.1,
+		}
+
+		if dist >= 0 {
+			m.EmbeddingsJSON = face.Embeddings{face.FixtureEmbeddingAt(f.Embedding(), dist, 1)}.JSON()
+		}
+
+		require.NoError(t, UnscopedDb().Create(m).Error)
+		t.Cleanup(func() { UnscopedDb().Delete(Marker{}, "marker_uid = ?", m.MarkerUID) })
+
+		return m
+	}
+
+	// detached checks that a marker left its cluster and waits for matching.
+	detached := func(t *testing.T, m *Marker) {
+		t.Helper()
+
+		assert.Empty(t, m.FaceID)
+		assert.Nil(t, m.MatchedAt)
+
+		stored := FindMarker(m.MarkerUID)
+		require.NotNil(t, stored)
+		assert.Empty(t, stored.FaceID, "detached in the database, not only in memory")
+		assert.Nil(t, stored.MatchedAt)
+		assert.Equal(t, dave.SubjUID, stored.SubjUID)
+	}
+
+	t.Run("OtherPerson", func(t *testing.T) {
+		f := newFace(t, carol.SubjUID, 7501)
+		m := newMarker(t, f, 0.6*f.AcceptDist())
+
+		require.NoError(t, m.resolveSubjectCollision())
+		detached(t, m)
+		assert.Equal(t, 1, FindFace(f.ID).Collisions)
+	})
+	t.Run("Anchored", func(t *testing.T) {
+		f := newFace(t, carol.SubjUID, 7507)
+		m := newMarker(t, f, 0.6*f.AcceptDist())
+		require.NoError(t, m.Updates(Values{"size": face.ClusterSizeThreshold, "score": face.ClusterScore("") + 10}))
+		t.Cleanup(func() { UnscopedDb().Delete(Face{}, "subj_uid = ?", dave.SubjUID) })
+
+		require.NoError(t, m.resolveSubjectCollision())
+		assert.Equal(t, 1, FindFace(f.ID).Collisions)
+
+		stored := FindMarker(m.MarkerUID)
+		require.NotNil(t, stored)
+		assert.Equal(t, m.FaceID, stored.FaceID)
+		assert.NotEqual(t, f.ID, stored.FaceID)
+		assert.NotNil(t, stored.MatchedAt)
+
+		if own := FindFace(stored.FaceID); assert.NotNil(t, own) {
+			assert.Equal(t, dave.SubjUID, own.SubjUID)
+		}
+	})
+	t.Run("OwnSeed", func(t *testing.T) {
+		// A face named by hand without a cluster seeds a face from its own embedding, which a face of
+		// the new person would share.
+		m := &Marker{
+			MarkerUID:      rnd.GenerateUID('m'),
+			MarkerType:     MarkerFace,
+			EmbeddingsJSON: face.Embeddings{face.FixtureEmbedding(7509)}.JSON(),
+			EmbedModel:     face.EmbeddingModelName(),
+			Size:           face.ClusterSizeThreshold,
+			Score:          face.ClusterScore("") + 10,
+			W:              0.1,
+			H:              0.1,
+		}
+		require.NoError(t, UnscopedDb().Create(m).Error)
+		t.Cleanup(func() { UnscopedDb().Delete(Marker{}, "marker_uid = ?", m.MarkerUID) })
+
+		changed, err := m.SetName(carol.SubjName, SrcManual)
+		require.NoError(t, err)
+		require.True(t, changed)
+		require.NoError(t, m.Save())
+		seed := m.FaceID
+		require.NotEmpty(t, seed)
+		t.Cleanup(func() { UnscopedDb().Delete(Face{}, "id = ?", seed) })
+
+		changed, err = m.SetName(dave.SubjName, SrcManual)
+		require.NoError(t, err)
+		require.True(t, changed)
+		require.NoError(t, m.Save())
+
+		stored := FindMarker(m.MarkerUID)
+		require.NotNil(t, stored)
+		assert.Equal(t, dave.SubjUID, stored.SubjUID)
+		assert.NotEqual(t, seed, stored.FaceID, "the marker does not stay on the other person's face")
+		assert.Empty(t, stored.FaceID, "and is left for matching")
+		assert.Nil(t, stored.MatchedAt)
+	})
+	t.Run("Invalid", func(t *testing.T) {
+		f := newFace(t, carol.SubjUID, 7508)
+		m := newMarker(t, f, 0.6*f.AcceptDist())
+		m.MarkerInvalid = true
+
+		require.NoError(t, m.resolveSubjectCollision())
+		detached(t, m)
+		assert.Zero(t, FindFace(f.ID).Collisions, "a region that is not a face is no evidence")
+	})
+	t.Run("NoEmbeddings", func(t *testing.T) {
+		f := newFace(t, carol.SubjUID, 7502)
+		m := newMarker(t, f, -1)
+
+		require.NoError(t, m.resolveSubjectCollision())
+		detached(t, m)
+		assert.Zero(t, FindFace(f.ID).Collisions, "nothing to compare, so nothing is reported")
+	})
+	t.Run("ReportFails", func(t *testing.T) {
+		f := newFace(t, carol.SubjUID, 7503)
+		m := newMarker(t, f, 0.6*f.AcceptDist())
+		require.NoError(t, UnscopedDb().Model(&Face{}).Where("id = ?", f.ID).UpdateColumn("embedding_json", []byte{}).Error)
+
+		require.NoError(t, m.resolveSubjectCollision(), "the name is kept")
+		detached(t, m)
+	})
+	t.Run("SamePerson", func(t *testing.T) {
+		f := newFace(t, dave.SubjUID, 7504)
+		m := newMarker(t, f, 0.6*f.AcceptDist())
+
+		require.NoError(t, m.resolveSubjectCollision())
+		assert.Equal(t, f.ID, FindMarker(m.MarkerUID).FaceID)
+		assert.Zero(t, FindFace(f.ID).Collisions)
+	})
+	t.Run("UnnamedCluster", func(t *testing.T) {
+		f := newFace(t, "", 7505)
+		m := newMarker(t, f, 0.6*f.AcceptDist())
+
+		require.NoError(t, m.resolveSubjectCollision())
+		assert.Equal(t, f.ID, FindMarker(m.MarkerUID).FaceID)
+	})
+	t.Run("NoFace", func(t *testing.T) {
+		m := &Marker{MarkerUID: rnd.GenerateUID('m'), MarkerType: MarkerFace, SubjUID: dave.SubjUID}
+		require.NoError(t, m.resolveSubjectCollision())
+	})
+	t.Run("NoUID", func(t *testing.T) {
+		f := newFace(t, carol.SubjUID, 7506)
+		m := &Marker{MarkerType: MarkerFace, SubjUID: dave.SubjUID, FaceID: f.ID, MatchedAt: TimeStamp()}
+
+		require.NoError(t, m.resolveSubjectCollision())
+		assert.Empty(t, m.FaceID)
+		assert.Nil(t, m.MatchedAt)
 	})
 }
 

@@ -363,7 +363,7 @@ func TestClearMarkerSubject(t *testing.T) {
 }
 
 // TestUpdateMarker_NamedCluster pins that naming one marker in a cluster named after another
-// person changes only that marker.
+// person relabels no other marker.
 func TestUpdateMarker_NamedCluster(t *testing.T) {
 	app, router, conf := NewApiTest()
 	UpdateMarker(router)
@@ -383,13 +383,13 @@ func TestUpdateMarker_NamedCluster(t *testing.T) {
 	person := entity.NewSubject("Named Cluster Person", entity.SubjPerson, entity.SrcManual)
 	require.NotNil(t, person)
 	require.NoError(t, person.Create())
-	t.Cleanup(func() { entity.UnscopedDb().Delete(&entity.Subject{}, "subj_uid = ?", person.SubjUID) })
+	t.Cleanup(func() { entity.UnscopedDb().Delete(entity.Subject{}, "subj_uid = ?", person.SubjUID) })
 	markPrivate(t, person, false)
 
 	f := entity.NewFace(person.SubjUID, entity.SrcAuto, face.Embeddings{face.FixtureEmbedding(7201)}, face.EmbeddingModelName())
 	require.NotNil(t, f)
 	require.NoError(t, f.Create())
-	t.Cleanup(func() { entity.UnscopedDb().Delete(&entity.Face{}, "id = ?", f.ID) })
+	t.Cleanup(func() { entity.UnscopedDb().Delete(entity.Face{}, "id = ?", f.ID) })
 
 	newMarker := func(subjUID, subjSrc string) string {
 		m := entity.Marker{
@@ -407,7 +407,7 @@ func TestUpdateMarker_NamedCluster(t *testing.T) {
 		}
 
 		require.NoError(t, entity.UnscopedDb().Create(&m).Error)
-		t.Cleanup(func() { entity.UnscopedDb().Delete(&entity.Marker{}, "marker_uid = ?", m.MarkerUID) })
+		t.Cleanup(func() { entity.UnscopedDb().Delete(entity.Marker{}, "marker_uid = ?", m.MarkerUID) })
 
 		return m.MarkerUID
 	}
@@ -422,7 +422,7 @@ func TestUpdateMarker_NamedCluster(t *testing.T) {
 	r := AuthenticatedRequestWithBody(app, http.MethodPut, "/api/v1/markers/"+rejected, string(b), sess.AuthToken())
 	require.Equal(t, http.StatusOK, r.Code, r.Body.String())
 
-	t.Cleanup(func() { entity.UnscopedDb().Delete(&entity.Subject{}, "subj_name = ?", "Named Cluster Other") })
+	t.Cleanup(func() { entity.UnscopedDb().Delete(entity.Subject{}, "subj_name = ?", "Named Cluster Other") })
 
 	named := entity.FindMarker(rejected)
 	require.NotNil(t, named)
@@ -432,4 +432,65 @@ func TestUpdateMarker_NamedCluster(t *testing.T) {
 	assert.Equal(t, person.SubjUID, entity.FindMarker(auto).SubjUID)
 	assert.Empty(t, entity.FindMarker(unnamed).SubjUID)
 	assert.Equal(t, person.SubjUID, entity.FindFace(f.ID).SubjUID)
+}
+
+// TestUpdateMarker_Correction pins that naming a face in a cluster after another existing person
+// reports it to the cluster and answers with the face moved to a face of that person.
+func TestUpdateMarker_Correction(t *testing.T) {
+	app, router, _ := NewApiTest()
+	UpdateMarker(router)
+
+	carol := entity.NewSubject("Correction Api Carol", entity.SubjPerson, entity.SrcManual)
+	require.NoError(t, carol.Create())
+	dave := entity.NewSubject("Correction Api Dave", entity.SubjPerson, entity.SrcManual)
+	require.NoError(t, dave.Create())
+	t.Cleanup(func() {
+		entity.UnscopedDb().Delete(entity.Subject{}, "subj_uid IN (?)", []string{carol.SubjUID, dave.SubjUID})
+	})
+
+	f := entity.NewFace(carol.SubjUID, entity.SrcAuto, face.Embeddings{face.FixtureEmbedding(7601)}, face.EmbeddingModelName())
+	require.NoError(t, f.Create())
+	t.Cleanup(func() { entity.UnscopedDb().Delete(entity.Face{}, "id = ?", f.ID) })
+
+	dist := 0.6 * f.AcceptDist()
+	m := entity.Marker{
+		MarkerUID:      rnd.GenerateUID('m'),
+		FileUID:        entity.FileFixtures.Get("exampleDNGFile.dng").FileUID,
+		MarkerType:     entity.MarkerFace,
+		SubjUID:        carol.SubjUID,
+		SubjSrc:        entity.SrcAuto,
+		FaceID:         f.ID,
+		FaceDist:       dist,
+		EmbeddingsJSON: face.Embeddings{face.FixtureEmbeddingAt(f.Embedding(), dist, 1)}.JSON(),
+		EmbedModel:     f.EmbedModel,
+		Size:           face.ClusterSizeThreshold,
+		Score:          face.ClusterScore("") + 10,
+		MatchedAt:      entity.TimeStamp(),
+		W:              0.1,
+		H:              0.1,
+	}
+
+	require.NoError(t, entity.UnscopedDb().Create(&m).Error)
+	t.Cleanup(func() { entity.UnscopedDb().Delete(entity.Marker{}, "marker_uid = ?", m.MarkerUID) })
+	t.Cleanup(func() { entity.UnscopedDb().Delete(entity.Face{}, "subj_uid = ?", dave.SubjUID) })
+
+	b, err := json.Marshal(form.Marker{SubjSrc: entity.SrcManual, MarkerName: dave.SubjName})
+	require.NoError(t, err)
+
+	r := PerformRequestWithBody(app, http.MethodPut, "/api/v1/markers/"+m.MarkerUID, string(b))
+	require.Equal(t, http.StatusOK, r.Code, r.Body.String())
+	assert.Equal(t, dave.SubjUID, gjson.Get(r.Body.String(), "SubjUID").String())
+
+	faceID := gjson.Get(r.Body.String(), "FaceID").String()
+	require.NotEmpty(t, faceID)
+	assert.NotEqual(t, f.ID, faceID)
+
+	if own := entity.FindFace(faceID); assert.NotNil(t, own) {
+		assert.Equal(t, dave.SubjUID, own.SubjUID)
+	}
+
+	cluster := entity.FindFace(f.ID)
+	require.NotNil(t, cluster)
+	assert.Equal(t, carol.SubjUID, cluster.SubjUID)
+	assert.Equal(t, 1, cluster.Collisions)
 }

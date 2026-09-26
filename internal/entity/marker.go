@@ -473,12 +473,56 @@ func (m *Marker) SyncSubject(updateRelated bool) (err error) {
 		Where(fmt.Sprintf("face_id IN (SELECT id FROM %s WHERE id = ? AND subj_uid = ?)", Face{}.TableName()), m.FaceID, m.SubjUID).
 		UpdateColumns(Values{"subj_uid": m.SubjUID, "subj_src": SrcAuto, "marker_review": false}).Error; err != nil {
 		return fmt.Errorf("%s (update related markers)", err)
-	} else if res.RowsAffected > 0 && m.face != nil {
-		log.Debugf("markers: matched %s with %s", subj, m.FaceID)
-		return m.face.RefreshPhotos()
+	} else if res.RowsAffected > 0 {
+		if m.face != nil {
+			log.Debugf("markers: matched %s with %s", subj, m.FaceID)
+			return m.face.RefreshPhotos()
+		}
+
+		return nil
 	}
 
-	return nil
+	return m.resolveSubjectCollision()
+}
+
+// resolveSubjectCollision reports the marker to its cluster as a collision when the cluster is named
+// after another person, and moves the marker to a face of its own person, or leaves it for matching.
+// Reporting is best effort: the name is kept either way.
+func (m *Marker) resolveSubjectCollision() error {
+	f := FindFace(m.FaceID)
+
+	if f == nil || f.SubjUID == "" || f.SubjUID == m.SubjUID {
+		return nil
+	} else if m.MarkerInvalid {
+		// A region flagged as not a face is no evidence against the cluster.
+	} else if resolved, err := f.ResolveCollision(m.Embeddings(), m.EmbedModel); err != nil {
+		log.Warnf("faces: %s (report collision of marker %s with face %s)", err, clean.Log(m.MarkerUID), clean.Log(f.ID))
+	} else if resolved {
+		log.Debugf("faces: marker %s resolved ambiguous subjects for face %s", clean.Log(m.MarkerUID), clean.Log(f.ID))
+	}
+
+	m.face = nil
+	m.FaceID = ""
+	m.FaceDist = -1.0
+	m.MatchedAt = nil
+
+	if m.MarkerUID == "" {
+		return nil
+	}
+
+	// Anchor the marker to a face of its own person, as naming a marker without a cluster does. A face
+	// with the same embedding may still belong to someone else, so that one is left for matching.
+	if m.MarkerInvalid {
+		// No face for a region that is not a face.
+	} else if own := m.Face(); own != nil && own.SubjUID == m.SubjUID && !own.SkipMatching() {
+		m.MatchedAt = TimeStamp()
+	} else {
+		m.face = nil
+		m.FaceID = ""
+		m.FaceDist = -1.0
+	}
+
+	return m.Updates(Values{"face_id": m.FaceID, "face_dist": m.FaceDist, "matched_at": m.MatchedAt})
 }
 
 // InvalidArea tests if the marker area is invalid or out of range.
