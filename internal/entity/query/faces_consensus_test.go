@@ -163,6 +163,7 @@ type consensusFixtures struct {
 	ambiguous, unclassified, foreignManual                       *entity.Face
 	xmpUnconfirmed, xmpUnlinked, xmpOther, xmpMinority, xmpAlone *entity.Face
 	xmpDeleted, xmpPet, xmpCorroborated, xmpForeignMatch         *entity.Face
+	xmpInvalidConfirmation, xmpValidConfirmation                 *entity.Face
 }
 
 // newConsensusFixtures stores the clusters of consensusFixtures and removes them after the test.
@@ -284,6 +285,20 @@ func newConsensusFixtures(t *testing.T) (fx consensusFixtures) {
 	consensusTestMarkers(t, fx.xmpCorroborated, core-1, carol.SubjUID, entity.SrcXmp, false, model)
 	consensusTestMarkers(t, fx.xmpCorroborated, 1, carol.SubjUID, entity.SrcAuto, false, model)
 
+	// A person whose only name given by hand is on a marker flagged as not a face is not confirmed.
+	irene := conflictTestSubject(t, "Consensus Irene")
+	consensusTestMarkers(t, consensusTestFace(t, 41), 1, irene.SubjUID, entity.SrcManual, true, model)
+	fx.xmpInvalidConfirmation = consensusTestFace(t, 42)
+	consensusTestMarkers(t, fx.xmpInvalidConfirmation, core, alice, entity.SrcAuto, false, model)
+	consensusTestMarkers(t, fx.xmpInvalidConfirmation, 1, irene.SubjUID, entity.SrcXmp, false, model)
+
+	// One valid name given by hand confirms a person, whatever other markers were flagged.
+	jonas := conflictTestSubject(t, "Consensus Jonas")
+	consensusTestMarkers(t, consensusTestFace(t, 43), 1, jonas.SubjUID, entity.SrcManual, true, model)
+	consensusTestMarkers(t, consensusTestFace(t, 44), 1, jonas.SubjUID, entity.SrcManual, false, model)
+	fx.xmpValidConfirmation = consensusTestFace(t, 45)
+	consensusTestMarkers(t, fx.xmpValidConfirmation, core, jonas.SubjUID, entity.SrcXmp, false, model)
+
 	fx.xmpDeleted = consensusTestFace(t, 35)
 	consensusTestMarkers(t, fx.xmpDeleted, core, alice, entity.SrcAuto, false, model)
 	consensusTestMarkers(t, fx.xmpDeleted, 1, erased.SubjUID, entity.SrcXmp, false, model)
@@ -355,7 +370,7 @@ func TestAnonymousFaceConsensus(t *testing.T) {
 		assert.False(t, c.Split)
 	})
 	t.Run("XmpNeutral", func(t *testing.T) {
-		for name, f := range map[string]*entity.Face{"Unconfirmed": fx.xmpUnconfirmed, "Unlinked": fx.xmpUnlinked, "Deleted": fx.xmpDeleted, "Pet": fx.xmpPet} {
+		for name, f := range map[string]*entity.Face{"Unconfirmed": fx.xmpUnconfirmed, "Unlinked": fx.xmpUnlinked, "Deleted": fx.xmpDeleted, "Pet": fx.xmpPet, "InvalidConfirmation": fx.xmpInvalidConfirmation} {
 			c := findConsensus(counts, f.ID)
 			require.NotNil(t, c, name)
 			assert.Equal(t, FaceConsensus{FaceID: f.ID, SubjUID: fx.alice.SubjUID, Votes: core, Matched: core, Valid: core + 1}, *c, name)
@@ -372,6 +387,12 @@ func TestAnonymousFaceConsensus(t *testing.T) {
 		require.NotNil(t, c)
 		assert.Equal(t, core, c.Votes)
 		assert.Zero(t, c.Matched)
+		assert.True(t, c.Agrees(core))
+	})
+	t.Run("XmpValidConfirmation", func(t *testing.T) {
+		c := findConsensus(counts, fx.xmpValidConfirmation.ID)
+		require.NotNil(t, c)
+		assert.Equal(t, core, c.Votes)
 		assert.True(t, c.Agrees(core))
 	})
 	t.Run("XmpForeignMatch", func(t *testing.T) {
@@ -437,14 +458,16 @@ func TestConsensusFaces(t *testing.T) {
 		require.NoError(t, err)
 
 		for name, f := range map[string]*entity.Face{
-			"Qualify":         fx.qualify,
-			"MultiRow":        fx.multiRow,
-			"Xmp":             fx.xmp,
-			"XmpUnconfirmed":  fx.xmpUnconfirmed,
-			"XmpUnlinked":     fx.xmpUnlinked,
-			"XmpDeleted":      fx.xmpDeleted,
-			"XmpCorroborated": fx.xmpCorroborated,
-			"XmpAlone":        fx.xmpAlone,
+			"Qualify":                fx.qualify,
+			"MultiRow":               fx.multiRow,
+			"Xmp":                    fx.xmp,
+			"XmpUnconfirmed":         fx.xmpUnconfirmed,
+			"XmpUnlinked":            fx.xmpUnlinked,
+			"XmpDeleted":             fx.xmpDeleted,
+			"XmpCorroborated":        fx.xmpCorroborated,
+			"XmpAlone":               fx.xmpAlone,
+			"XmpInvalidConfirmation": fx.xmpInvalidConfirmation,
+			"XmpValidConfirmation":   fx.xmpValidConfirmation,
 		} {
 			assert.NotNil(t, findConsensus(result, f.ID), name)
 		}

@@ -48,11 +48,11 @@ type faceConsensusRow struct {
 }
 
 // faceConsensusVote is the condition under which a marker votes: a valid marker the matcher named, or
-// one an XMP name links to an existing person whom a person named on some marker or verified.
+// one an XMP name links to an existing person who is marked as Verified or named by hand on a valid marker.
 var faceConsensusVote = fmt.Sprintf(`m.subj_uid <> '' AND m.marker_invalid = 0 AND (m.subj_src = '' OR (m.subj_src = '%[1]s'
 	AND EXISTS (SELECT 1 FROM %[2]s s WHERE s.subj_uid = m.subj_uid AND s.subj_type = '%[3]s' AND s.deleted_at IS NULL
 	AND (s.verified = 1 OR EXISTS (SELECT 1 FROM %[4]s h WHERE h.subj_uid = s.subj_uid AND h.marker_type = '%[5]s'
-	AND ((h.subj_src > '' AND h.subj_src < '%[1]s') OR h.subj_src > '%[1]s'))))))`,
+	AND h.marker_invalid = 0 AND ((h.subj_src > '' AND h.subj_src < '%[1]s') OR h.subj_src > '%[1]s'))))))`,
 	entity.SrcXmp, entity.Subject{}.TableName(), entity.SubjPerson, entity.Marker{}.TableName(), entity.MarkerFace)
 
 // AnonymousFaceConsensus counts the named markers of every visible, regular, automatically created
